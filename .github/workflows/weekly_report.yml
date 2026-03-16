@@ -1,4 +1,4 @@
-yamlname: Weekly Stock Report
+name: Weekly Stock Report
 
 on:
   schedule:
