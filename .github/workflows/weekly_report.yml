@@ -1,28 +1,15 @@
 name: Weekly Stock Report
 
 on:
-  schedule:
-    - cron: "0 15 * * 5"
   workflow_dispatch:
 
 jobs:
-  send-report:
+  debug:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install requests
-
-      - name: Run bot
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python bot.py
+      - run: pip install requests
+      - run: python debug.py
