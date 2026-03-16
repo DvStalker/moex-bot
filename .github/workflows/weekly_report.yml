@@ -28,4 +28,5 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TINVEST_TOKEN: ${{ secrets.TINVEST_TOKEN }}
         run: python bot.py
