@@ -1,10 +1,9 @@
-name: Weekly Stock Report
+yamlname: Weekly Stock Report
 
 on:
   schedule:
-    # Каждую пятницу в 18:00 по МСК (= 15:00 UTC)
     - cron: "0 15 * * 5"
-  workflow_dispatch:  # позволяет запустить вручную из GitHub
+  workflow_dispatch:
 
 jobs:
   send-report:
@@ -27,8 +26,3 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python bot.py
-```
-
-Когда создаёшь файл на GitHub, в поле имени файла напиши именно так (с папками):
-```
-.github/workflows/weekly_report.yml
