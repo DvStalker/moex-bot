@@ -90,15 +90,16 @@ def get_candles_week(figi):
 
 
 def get_dividends_and_coupons(account_id):
-    """Получить все выплаты (дивиденды + купоны) с даты покупки."""
+    """Получить все выплаты (дивиденды + купоны) за всё время."""
     total = 0.0
     try:
         now = datetime.now(timezone.utc)
+        from_date = datetime(2000, 1, 1, tzinfo=timezone.utc)
         data = ti_post(
             "/tinkoff.public.invest.api.contract.v1.OperationsService/GetOperations",
             {
                 "accountId": account_id,
-                "from": PURCHASE_DATE.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "from": from_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "to": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "state": "OPERATION_STATE_EXECUTED"
             }
@@ -221,7 +222,7 @@ def build_report():
     lines.append(f"{arr_pnl} *Доход с 08.12.2025 (рост цен): {total_pnl:+,.2f} ₽*")
 
     arr_div = "💰" if dividends_total > 0 else "📭"
-    lines.append(f"{arr_div} *Купоны и дивиденды с 08.12.2025: {dividends_total:+,.2f} ₽*")
+    lines.append(f"{arr_div} *Купоны и дивиденды за всё время: {dividends_total:+,.2f} ₽*")
 
     total_income = total_pnl + dividends_total
     arr_total = "🟢" if total_income >= 0 else "🔴"
