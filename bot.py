@@ -219,13 +219,26 @@ def build_report():
 
 
 def send(text):
-    r = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"},
-        timeout=15
-    )
-    r.raise_for_status()
-    print("✅ Отправлено!")
+    """Отправляет сообщение, разбивая на части если длиннее 4000 символов."""
+    max_len = 4000
+    parts = []
+    while len(text) > max_len:
+        # Разбиваем по разделителю ━━━ чтобы не резать посередине бумаги
+        split_at = text.rfind("━━━", 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        parts.append(text[:split_at])
+        text = text[split_at:]
+    parts.append(text)
+
+    for part in parts:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": part, "parse_mode": "Markdown"},
+            timeout=15
+        )
+        r.raise_for_status()
+    print(f"✅ Отправлено ({len(parts)} сообщений)!")
 
 
 if __name__ == "__main__":
