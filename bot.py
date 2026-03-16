@@ -2,154 +2,130 @@ import os
 import requests
 from datetime import datetime, timedelta
 
-# === НАСТРОЙКИ ===
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 PURCHASE_DATE = "2025-12-08"
+MOEX = "https://iss.moex.com/iss"
 
 PORTFOLIO = [
-    {"secid": "SU26207RMFS9", "name": "ОФЗ 26207",              "qty": 3,   "engine": "stock", "market": "bonds"},
-    {"secid": "SU26218RMFS6", "name": "ОФЗ 26218",              "qty": 5,   "engine": "stock", "market": "bonds"},
-    {"secid": "SU26226RMFS9", "name": "ОФЗ 26226",              "qty": 1,   "engine": "stock", "market": "bonds"},
-    {"secid": "RU000A0ZYVU5", "name": "Роснефть 002Р-05",       "qty": 3,   "engine": "stock", "market": "bonds"},
-    {"secid": "RU000A106375", "name": "РЖД БО 001Р-44R",        "qty": 9,   "engine": "stock", "market": "bonds"},
-    {"secid": "RU000A1069P3", "name": "Сбербанк 2P-SBER44",     "qty": 4,   "engine": "stock", "market": "bonds"},
-    {"secid": "TPAY",         "name": "Пассивный доход (TPAY)", "qty": 380, "engine": "stock", "market": "shares"},
+    {"secid": "SU26207RMFS9", "name": "ОФЗ 26207",              "qty": 3},
+    {"secid": "SU26218RMFS6", "name": "ОФЗ 26218",              "qty": 5},
+    {"secid": "SU26226RMFS9", "name": "ОФЗ 26226",              "qty": 1},
+    {"secid": "RU000A0ZYVU5", "name": "Роснефть 002Р-05",       "qty": 3},
+    {"secid": "RU000A106375", "name": "РЖД БО 001Р-44R",        "qty": 9},
+    {"secid": "RU000A1069P3", "name": "Сбербанк 2P-SBER44",     "qty": 4},
+    {"secid": "TPAY",         "name": "Пассивный доход (TPAY)", "qty": 380},
 ]
 
-MOEX_BASE = "https://iss.moex.com/iss"
+
+def moex_get(url):
+    r = requests.get(url, timeout=15)
+    r.raise_for_status()
+    return r.json()
 
 
-def find_primary_board(secid):
-    """Найти основную торгуемую площадку для бумаги."""
-    url = f"{MOEX_BASE}/securities/{secid}.json?iss.meta=off&iss.only=boards"
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    boards = data.get("boards", {})
-    cols = boards.get("columns", [])
-    rows = boards.get("data", [])
-    
-    # Ищем основную торгуемую площадку
-    primary = None
-    for row in rows:
-        d = dict(zip(cols, row))
-        if d.get("is_primary") == 1 and d.get("is_traded") == 1:
-            return d["boardid"], d.get("engine", "stock"), d.get("market", "bonds")
-        if d.get("is_traded") == 1 and primary is None:
-            primary = (d["boardid"], d.get("engine", "stock"), d.get("market", "bonds"))
-    
-    return primary if primary else (None, None, None)
-
-
-def get_current_price(secid, engine, market, board):
-    """Получить текущую цену."""
-    url = (f"{MOEX_BASE}/engines/{engine}/markets/{market}/boards/{board}"
-           f"/securities/{secid}.json?iss.meta=off&iss.only=marketdata,securities")
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-
+def get_price(secid):
+    """Универсальный запрос цены — MOEX сам выбирает основную площадку."""
+    data = moex_get(f"{MOEX}/securities/{secid}.json?iss.meta=off&iss.only=marketdata")
     md = data.get("marketdata", {})
     cols = md.get("columns", [])
     rows = md.get("data", [])
-    if rows:
-        d = dict(zip(cols, rows[0]))
-        price = d.get("LAST") or d.get("MARKETPRICE") or d.get("LCURRENTPRICE")
-        if price:
-            return float(price)
-
-    sec = data.get("securities", {})
-    cols = sec.get("columns", [])
-    rows = sec.get("data", [])
-    if rows:
-        d = dict(zip(cols, rows[0]))
-        price = d.get("PREVPRICE") or d.get("PREVLEGALCLOSEPRICE")
-        if price:
-            return float(price)
-
+    for row in rows:
+        d = dict(zip(cols, row))
+        p = d.get("LAST") or d.get("MARKETPRICE") or d.get("LCURRENTPRICE") or d.get("PREVPRICE")
+        if p:
+            return float(p)
     return None
 
 
-def get_history(secid, engine, market, board, date_from, date_to):
-    """Получить историю цен."""
-    url = (f"{MOEX_BASE}/history/engines/{engine}/markets/{market}/boards/{board}"
-           f"/securities/{secid}.json?from={date_from}&till={date_to}&iss.meta=off&iss.only=history")
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    history = data.get("history", {})
-    cols = history.get("columns", [])
-    rows = history.get("data", [])
-    return cols, rows
+def get_history_price(secid, date_from, date_to):
+    """История цен через универсальный endpoint без указания board."""
+    # Пробуем bonds
+    for market in ["bonds", "shares"]:
+        url = (f"{MOEX}/history/engines/stock/markets/{market}/securities/{secid}.json"
+               f"?from={date_from}&till={date_to}&iss.meta=off&iss.only=history"
+               f"&history.columns=TRADEDATE,CLOSE,LEGALCLOSEPRICE,WAPRICE,OPEN")
+        try:
+            data = moex_get(url)
+            history = data.get("history", {})
+            cols = history.get("columns", [])
+            rows = history.get("data", [])
+            if rows:
+                return cols, rows
+        except Exception:
+            continue
+    return [], []
 
 
-def extract_close(d):
+def extract_price(d):
     return d.get("CLOSE") or d.get("LEGALCLOSEPRICE") or d.get("WAPRICE") or d.get("OPEN")
 
 
-def get_week_prices(secid, engine, market, board):
+def get_week_change(secid):
     today = datetime.now()
     week_ago = (today - timedelta(days=7)).strftime("%Y-%m-%d")
-    today_str = today.strftime("%Y-%m-%d")
-    cols, rows = get_history(secid, engine, market, board, week_ago, today_str)
-    if not rows:
+    cols, rows = get_history_price(secid, week_ago, today.strftime("%Y-%m-%d"))
+    if len(rows) < 2:
         return None, None
-    p1 = extract_close(dict(zip(cols, rows[0])))
-    p2 = extract_close(dict(zip(cols, rows[-1])))
-    return (float(p1) if p1 else None, float(p2) if p2 else None)
+    p1 = extract_price(dict(zip(cols, rows[0])))
+    p2 = extract_price(dict(zip(cols, rows[-1])))
+    return (float(p1) if p1 else None), (float(p2) if p2 else None)
 
 
-def get_purchase_price(secid, engine, market, board):
+def get_purchase_price(secid):
     dt = datetime.strptime(PURCHASE_DATE, "%Y-%m-%d")
     date_end = (dt + timedelta(days=5)).strftime("%Y-%m-%d")
-    cols, rows = get_history(secid, engine, market, board, PURCHASE_DATE, date_end)
+    cols, rows = get_history_price(secid, PURCHASE_DATE, date_end)
     if not rows:
         return None
-    p = extract_close(dict(zip(cols, rows[0])))
+    p = extract_price(dict(zip(cols, rows[0])))
     return float(p) if p else None
 
 
-def get_ai_analysis(name, current_price, purchase_price, week_pct, since_pct):
+def normalize(price, secid):
+    """Облигации отдают цену в % от номинала — конвертируем в рубли."""
+    if price and price < 200:
+        return price * 10.0  # 98.5% * 10 = 985 руб
+    return price
+
+
+def ai_analysis(name, price, purchase, week_pct, since_pct):
     if not ANTHROPIC_API_KEY:
         return None
-    since_info = f"{since_pct:+.2f}% с момента покупки (08.12.2025)" if purchase_price else "данных о покупке нет"
-    prompt = f"""Ты дружелюбный финансовый помощник. Напиши короткий понятный комментарий по облигации/фонду "{name}" для обычного человека без финансового образования.
-
-Данные:
-- Текущая цена: {current_price:.2f} ₽
-- За неделю: {week_pct:+.2f}%
-- {since_info}
-
-Напиши 3 коротких предложения: как ведёт себя инструмент, хорошо это или нет, что делать (держать/докупить/присмотреться). Пиши просто, без терминов. Только текст."""
-
-    resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={"Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01"},
-        json={"model": "claude-sonnet-4-20250514", "max_tokens": 250, "messages": [{"role": "user", "content": prompt}]},
-        timeout=30
+    since_txt = f"{since_pct:+.2f}% с покупки" if purchase else "нет данных о покупке"
+    prompt = (
+        f'Напиши 3 предложения про облигацию/фонд "{name}" для домохозяйки без финансового образования.\n'
+        f"Цена: {price:.2f}₽, за неделю: {week_pct:+.2f}%, {since_txt}.\n"
+        f"1. Что происходит с ценой. 2. Хорошо это или плохо. 3. Что делать: держать, докупить или следить.\n"
+        f"Только простой текст, без списков и заголовков."
     )
-    resp.raise_for_status()
-    return resp.json()["content"][0]["text"].strip()
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+            json={"model": "claude-sonnet-4-20250514", "max_tokens": 200, "messages": [{"role": "user", "content": prompt}]},
+            timeout=30
+        )
+        r.raise_for_status()
+        return r.json()["content"][0]["text"].strip()
+    except Exception as e:
+        return f"Анализ недоступен: {e}"
 
 
 def build_report():
-    lines = []
-    lines.append("📊 *Еженедельный отчёт по портфелю*")
-    lines.append(f"📅 {datetime.now().strftime('%d.%m.%Y')}  |  Куплено: 08.12.2025\n")
+    lines = ["📊 *Еженедельный отчёт по портфелю*",
+             f"📅 {datetime.now().strftime('%d.%m.%Y')}  |  Куплено: 08.12.2025\n"]
 
-    total_value = 0.0
-    total_purchase_value = 0.0
-    total_week_change = 0.0
+    total_now = 0.0
+    total_buy = 0.0
+    total_week = 0.0
 
     for item in PORTFOLIO:
         secid = item["secid"]
         name = item["name"]
         qty = item["qty"]
-        engine = item["engine"]
-        market = item["market"]
 
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"*{name}* ({qty} шт.)")
@@ -160,64 +136,48 @@ def build_report():
         purchase_price = None
 
         try:
-            # Автоматически найти правильную площадку
-            board, eng, mkt = find_primary_board(secid)
-            if not board:
-                lines.append("  ⚠️ Площадка не найдена")
-                lines.append("")
-                continue
+            raw = get_price(secid)
+            real_price = normalize(raw, secid) if raw else 0.0
 
-            # Используем найденные параметры
-            engine = eng
-            market = mkt
-
-            current = get_current_price(secid, engine, market, board)
-
-            # Облигации: цена в % от номинала 1000 ₽
-            multiplier = 10.0 if (market == "bonds" and current and current < 200) else 1.0
-
-            if current:
-                real_price = current * multiplier
-                position_value = real_price * qty
-                total_value += position_value
-                lines.append(f"  💰 Цена: *{real_price:.2f} ₽*  |  Позиция: *{position_value:,.2f} ₽*")
+            if real_price:
+                pos = real_price * qty
+                total_now += pos
+                lines.append(f"  💰 Цена: *{real_price:.2f} ₽*  |  Позиция: *{pos:,.2f} ₽*")
             else:
                 lines.append("  💰 Цена: нет данных")
 
             # За неделю
-            p_start, p_end = get_week_prices(secid, engine, market, board)
-            if p_start and p_end:
-                ps = p_start * multiplier
-                pe = p_end * multiplier
-                change = pe - ps
-                week_pct = (change / ps * 100) if ps else 0
-                pos_change = change * qty
-                total_week_change += pos_change
-                arrow = "🟢" if change >= 0 else "🔴"
-                lines.append(f"  {arrow} За неделю: {change:+.2f} ₽ ({week_pct:+.2f}%)  |  по позиции: {pos_change:+.2f} ₽")
+            p1, p2 = get_week_change(secid)
+            p1 = normalize(p1, secid) if p1 else None
+            p2 = normalize(p2, secid) if p2 else None
+            if p1 and p2:
+                diff = p2 - p1
+                week_pct = diff / p1 * 100
+                pos_diff = diff * qty
+                total_week += pos_diff
+                arr = "🟢" if diff >= 0 else "🔴"
+                lines.append(f"  {arr} За неделю: {diff:+.2f} ₽ ({week_pct:+.2f}%)  |  по позиции: {pos_diff:+.2f} ₽")
             else:
                 lines.append("  📉 За неделю: нет данных")
 
-            # С даты покупки
-            p_buy_raw = get_purchase_price(secid, engine, market, board)
-            if p_buy_raw and current:
-                purchase_price = p_buy_raw * multiplier
-                total_purchase_value += purchase_price * qty
-                since_change = real_price - purchase_price
-                since_pct = (since_change / purchase_price * 100) if purchase_price else 0
-                since_pos = since_change * qty
-                arrow2 = "🟢" if since_change >= 0 else "🔴"
-                lines.append(f"  {arrow2} С 08.12.25: {since_change:+.2f} ₽ ({since_pct:+.2f}%)  |  по позиции: {since_pos:+.2f} ₽")
+            # С покупки
+            buy_raw = get_purchase_price(secid)
+            purchase_price = normalize(buy_raw, secid) if buy_raw else None
+            if purchase_price and real_price:
+                total_buy += purchase_price * qty
+                since_diff = real_price - purchase_price
+                since_pct = since_diff / purchase_price * 100
+                since_pos = since_diff * qty
+                arr2 = "🟢" if since_diff >= 0 else "🔴"
+                lines.append(f"  {arr2} С 08.12.25: {since_diff:+.2f} ₽ ({since_pct:+.2f}%)  |  по позиции: {since_pos:+.2f} ₽")
             else:
                 lines.append("  📊 С покупки: нет данных")
 
-            # AI анализ
-            try:
-                analysis = get_ai_analysis(name, real_price, purchase_price, week_pct, since_pct)
+            # AI аналитика
+            if real_price:
+                analysis = ai_analysis(name, real_price, purchase_price, week_pct, since_pct)
                 if analysis:
                     lines.append(f"\n  🤖 _{analysis}_")
-            except Exception:
-                pass
 
         except Exception as e:
             lines.append(f"  ⚠️ Ошибка: {e}")
@@ -225,30 +185,30 @@ def build_report():
         lines.append("")
 
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"💼 *Итого: {total_value:,.2f} ₽*")
-    arrow_w = "🟢" if total_week_change >= 0 else "🔴"
-    lines.append(f"{arrow_w} *За неделю: {total_week_change:+,.2f} ₽*")
+    lines.append(f"💼 *Итого: {total_now:,.2f} ₽*")
+    arr_w = "🟢" if total_week >= 0 else "🔴"
+    lines.append(f"{arr_w} *За неделю: {total_week:+,.2f} ₽*")
+    if total_buy > 0:
+        since_total = total_now - total_buy
+        since_total_pct = since_total / total_buy * 100
+        arr_s = "🟢" if since_total >= 0 else "🔴"
+        lines.append(f"{arr_s} *С 08.12.2025: {since_total:+,.2f} ₽ ({since_total_pct:+.2f}%)*")
 
-    if total_purchase_value > 0:
-        total_since = total_value - total_purchase_value
-        total_since_pct = (total_since / total_purchase_value * 100)
-        arrow_s = "🟢" if total_since >= 0 else "🔴"
-        lines.append(f"{arrow_s} *С 08.12.2025: {total_since:+,.2f} ₽ ({total_since_pct:+.2f}%)*")
-
-    lines.append("")
-    lines.append("_Данные: Московская Биржа (ISS MOEX API)_")
+    lines.append("\n_Данные: Московская Биржа (ISS MOEX API)_")
     return "\n".join(lines)
 
 
-def send_telegram(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    resp = requests.post(url, json=payload, timeout=15)
-    resp.raise_for_status()
-    print("✅ Отчёт отправлен!")
+def send(text):
+    r = requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"},
+        timeout=15
+    )
+    r.raise_for_status()
+    print("✅ Отправлено!")
 
 
 if __name__ == "__main__":
     report = build_report()
     print(report)
-    send_telegram(report)
+    send(report)
