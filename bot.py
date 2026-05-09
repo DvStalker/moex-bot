@@ -1,6 +1,7 @@
 import os
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from PIL import Image, ImageDraw, ImageFont
 
 
 # ─────────────────────────────────────────────
@@ -9,37 +10,32 @@ from datetime import datetime, timedelta, timezone
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 TINVEST_TOKEN = os.environ["TINVEST_TOKEN"]
 
 ACCOUNT_NAME = "Очень долгий срок"
-
-PURCHASE_DATE = datetime(2025, 12, 8, tzinfo=timezone.utc)
 
 MONTHLY_INVEST = 60_000
 YEARS = 17
 INFLATION = 0.07
 
-# Индексация ежемесячных пополнений.
-# 0.00 = каждый месяц по 60 000 ₽ без роста.
+# Индексация пополнений.
+# 0.00 = всегда по 60 000 ₽ в месяц.
 # 0.05 = каждый год увеличивать пополнение на 5%.
 CONTRIBUTION_INDEXATION = 0.00
 
-# Сколько годовой доходности условно съедают комиссии, налоги, ошибки, спреды.
-# Для долгосрочного прогноза лучше закладывать небольшой "тормоз".
+# Условные ежегодные издержки: комиссии, налоги, спреды, ошибки.
 ANNUAL_COST_DRAG = 0.005
 
-# Целевая структура будущего портфеля.
-# Именно по этой структуре считаются будущие пополнения.
+# Целевая структура будущих покупок.
+# Сумма должна быть 1.00.
 TARGET_ALLOCATION = {
-    "bond": 0.50,   # облигации
-    "stock": 0.30,  # акции
-    "fund": 0.15,   # фонды / ETF / БПИФ
-    "cash": 0.05,   # деньги / фонды ликвидности
+    "bond": 0.50,
+    "stock": 0.30,
+    "fund": 0.15,
+    "cash": 0.05,
 }
 
-# Модельные ожидаемые доходности по классам активов.
-# Это не гарантия, а сценарная модель.
+# Сценарные ожидаемые доходности по классам активов.
 EXPECTED_RETURNS = {
     "bond": {
         "pessimistic": 0.08,
@@ -74,6 +70,7 @@ EXPECTED_RETURNS = {
 # ─────────────────────────────────────────────
 
 TINVEST = "https://invest-public-api.tinkoff.ru/rest"
+
 HEADERS = {
     "Authorization": f"Bearer {TINVEST_TOKEN}",
     "Content-Type": "application/json",
@@ -85,7 +82,7 @@ def ti_post(path, body=None):
         f"{TINVEST}{path}",
         headers=HEADERS,
         json=body or {},
-        timeout=15,
+        timeout=20,
     )
     r.raise_for_status()
     return r.json()
@@ -94,12 +91,14 @@ def ti_post(path, body=None):
 def moneyval(mv):
     if not mv:
         return 0.0
+
     return int(mv.get("units", 0)) + int(mv.get("nano", 0)) / 1e9
 
 
 def quotation(q):
     if not q:
         return 0.0
+
     return int(q.get("units", 0)) + int(q.get("nano", 0)) / 1e9
 
 
@@ -111,13 +110,15 @@ def get_account_id():
             return acc["id"]
 
     names = [a.get("name") for a in data.get("accounts", [])]
-    raise Exception(f"Счёт '{ACCOUNT_NAME}' не найден. Доступные: {names}")
+    raise Exception(f"Счёт '{ACCOUNT_NAME}' не найден. Доступные счета: {names}")
 
 
 def get_portfolio(account_id):
     return ti_post(
         "/tinkoff.public.invest.api.contract.v1.OperationsService/GetPortfolio",
-        {"accountId": account_id},
+        {
+            "accountId": account_id,
+        },
     )
 
 
@@ -130,93 +131,17 @@ def get_instrument_info(figi):
                 "id": figi,
             },
         )
+
         inst = data.get("instrument", {})
+
         name = inst.get("name") or inst.get("ticker") or figi
         kind = inst.get("instrumentKind", "")
         ticker = inst.get("ticker", "")
+
         return name, kind, ticker
+
     except Exception:
         return figi, "", ""
-
-
-def get_candles_week(figi):
-    try:
-        now = datetime.now(timezone.utc)
-        data = ti_post(
-            "/tinkoff.public.invest.api.contract.v1.MarketDataService/GetCandles",
-            {
-                "figi": figi,
-                "from": (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "to": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "interval": "CANDLE_INTERVAL_DAY",
-            },
-        )
-
-        candles = data.get("candles", [])
-
-        if len(candles) >= 2:
-            return (
-                quotation(candles[0].get("close")),
-                quotation(candles[-1].get("close")),
-            )
-
-    except Exception:
-        pass
-
-    return None, None
-
-
-def get_historical_cagr(figi):
-    """
-    Справочная историческая доходность цены.
-    Используется только как информационный блок, не как основа прогноза на 17 лет.
-    """
-    now = datetime.now(timezone.utc)
-
-    intervals = [
-        ("CANDLE_INTERVAL_MONTH", 365 * 17, 12.0),
-        ("CANDLE_INTERVAL_WEEK", 365 * 5, 52.0),
-        ("CANDLE_INTERVAL_DAY", 365 * 3, 365.0),
-    ]
-
-    for interval, days_back, per_year in intervals:
-        try:
-            from_date = now - timedelta(days=days_back)
-
-            data = ti_post(
-                "/tinkoff.public.invest.api.contract.v1.MarketDataService/GetCandles",
-                {
-                    "figi": figi,
-                    "from": from_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "to": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "interval": interval,
-                },
-            )
-
-            candles = data.get("candles", [])
-
-            if len(candles) < 2:
-                continue
-
-            p_first = quotation(candles[0].get("close"))
-            p_last = quotation(candles[-1].get("close"))
-
-            if not p_first or not p_last or p_first <= 0:
-                continue
-
-            years_avail = len(candles) / per_year
-
-            if years_avail < 0.05:
-                continue
-
-            price_cagr = (p_last / p_first) ** (1 / years_avail) - 1
-
-            return price_cagr, round(years_avail, 1)
-
-        except Exception:
-            continue
-
-    return None, None
 
 
 def get_dividends_and_coupons(account_id):
@@ -248,7 +173,7 @@ def get_dividends_and_coupons(account_id):
                 total += moneyval(op.get("payment"))
 
     except Exception as e:
-        print(f"Ошибка выплат: {e}")
+        print(f"Ошибка получения купонов и дивидендов: {e}")
 
     return total
 
@@ -258,11 +183,6 @@ def get_dividends_and_coupons(account_id):
 # ─────────────────────────────────────────────
 
 def classify_asset(kind, name="", ticker=""):
-    """
-    Классифицирует инструмент по типу.
-    Используется для анализа текущего портфеля и сравнения с целевой структурой.
-    """
-
     text = f"{kind} {name} {ticker}".lower()
 
     bond_words = [
@@ -289,7 +209,6 @@ def classify_asset(kind, name="", ticker=""):
         "бпиф",
         "пиф",
         "фонд",
-        "тмош",
         "ликвидность",
     ]
 
@@ -325,26 +244,22 @@ def asset_class_ru(asset_class):
         "bond": "Облигации",
         "stock": "Акции",
         "fund": "Фонды",
-        "cash": "Деньги / ликвидность",
+        "cash": "Деньги",
         "other": "Прочее",
     }
+
     return names.get(asset_class, asset_class)
 
 
 def allocation_sum_is_valid(allocation):
-    total = sum(allocation.values())
-    return abs(total - 1.0) < 0.0001
+    return abs(sum(allocation.values()) - 1.0) < 0.0001
 
 
 # ─────────────────────────────────────────────
-# ДОЛГОСРОЧНЫЙ ПРОГНОЗ
+# ПРОГНОЗ НА 17 ЛЕТ
 # ─────────────────────────────────────────────
 
 def weighted_expected_return(allocation, scenario):
-    """
-    Считает доходность портфеля по целевой структуре.
-    """
-
     result = 0.0
 
     for asset_class, weight in allocation.items():
@@ -357,9 +272,6 @@ def weighted_expected_return(allocation, scenario):
 
 
 def real_rate(nominal_rate, inflation):
-    """
-    Реальная доходность с учётом инфляции.
-    """
     return (1 + nominal_rate) / (1 + inflation) - 1
 
 
@@ -370,15 +282,6 @@ def future_value_with_monthly_contributions(
     annual_rate,
     contribution_indexation=0.0,
 ):
-    """
-    Будущая стоимость портфеля.
-
-    Учитывает:
-    1. Рост уже накопленного портфеля.
-    2. Ежемесячные пополнения.
-    3. Возможную ежегодную индексацию пополнений.
-    """
-
     monthly_rate = (1 + annual_rate) ** (1 / 12) - 1
 
     fv_existing = current_value * ((1 + annual_rate) ** years)
@@ -387,12 +290,13 @@ def future_value_with_monthly_contributions(
     current_monthly_invest = monthly_invest
 
     for month in range(1, years * 12 + 1):
-        # Индексация пополнений раз в год.
         if month > 1 and (month - 1) % 12 == 0:
-            current_monthly_invest *= (1 + contribution_indexation)
+            current_monthly_invest *= 1 + contribution_indexation
 
         months_to_grow = years * 12 - month + 1
-        fv_contributions += current_monthly_invest * ((1 + monthly_rate) ** months_to_grow)
+        fv_contributions += current_monthly_invest * (
+            (1 + monthly_rate) ** months_to_grow
+        )
 
     return fv_existing + fv_contributions
 
@@ -403,121 +307,27 @@ def total_contributions(
     years,
     contribution_indexation=0.0,
 ):
-    """
-    Считает сумму собственных вложений:
-    текущий портфель + будущие пополнения.
-    """
-
     total = current_value
     current_monthly_invest = monthly_invest
 
     for month in range(1, years * 12 + 1):
         if month > 1 and (month - 1) % 12 == 0:
-            current_monthly_invest *= (1 + contribution_indexation)
+            current_monthly_invest *= 1 + contribution_indexation
 
         total += current_monthly_invest
 
     return total
 
 
-def forecast_milestones(current_portfolio_value, annual_rate):
-    """
-    Контрольные точки прогноза: 5 / 10 / 15 / 17 лет.
-    """
-
-    milestones = [5, 10, 15, YEARS]
-    result = []
-
-    for year in milestones:
-        nominal = future_value_with_monthly_contributions(
-            current_value=current_portfolio_value,
-            monthly_invest=MONTHLY_INVEST,
-            years=year,
-            annual_rate=annual_rate,
-            contribution_indexation=CONTRIBUTION_INDEXATION,
-        )
-
-        real_value = nominal / ((1 + INFLATION) ** year)
-
-        invested = total_contributions(
-            current_value=current_portfolio_value,
-            monthly_invest=MONTHLY_INVEST,
-            years=year,
-            contribution_indexation=CONTRIBUTION_INDEXATION,
-        )
-
-        result.append(
-            {
-                "year": year,
-                "nominal": nominal,
-                "real": real_value,
-                "invested": invested,
-                "profit": nominal - invested,
-            }
-        )
-
-    return result
-
-
-def build_rebalance_recommendation(current_allocation):
-    """
-    Показывает, куда лучше направлять новые пополнения,
-    если фактическая структура отличается от целевой.
-    """
-
-    lines = []
-
-    lines.append("*Сравнение с целевой структурой:*")
-
-    underweight = []
-
-    for asset_class, target_weight in TARGET_ALLOCATION.items():
-        current_weight = current_allocation.get(asset_class, 0.0)
-        diff = current_weight - target_weight
-
-        if diff >= 0:
-            sign = "+"
-        else:
-            sign = ""
-
-        lines.append(
-            f"  • {asset_class_ru(asset_class)}: "
-            f"факт {current_weight * 100:.1f}% / "
-            f"цель {target_weight * 100:.1f}% "
-            f"({sign}{diff * 100:.1f} п.п.)"
-        )
-
-        if diff < -0.03:
-            underweight.append((asset_class, abs(diff)))
-
-    if underweight:
-        underweight.sort(key=lambda x: x[1], reverse=True)
-
-        lines.append("")
-        lines.append("*Куда логично направлять новые пополнения:*")
-
-        for asset_class, diff in underweight:
-            lines.append(
-                f"  • {asset_class_ru(asset_class)} — недовес примерно {diff * 100:.1f} п.п."
-            )
-    else:
-        lines.append("")
-        lines.append("_Структура близка к целевой. Можно пополнять пропорционально плану._")
-
-    return "\n".join(lines)
-
-
-def build_long_term_forecast(current_portfolio_value, current_allocation):
-    """
-    Основной блок долгосрочного прогноза на 17 лет.
-    """
-
+def build_forecast_data(current_portfolio_value):
     if not allocation_sum_is_valid(TARGET_ALLOCATION):
-        return (
-            "\n━━━━━━━━━━━━━━━━━━━━\n"
-            "⚠️ *Ошибка в TARGET_ALLOCATION*\n"
-            "Сумма долей целевого портфеля должна быть равна 100%."
-        )
+        raise Exception("Ошибка: сумма TARGET_ALLOCATION должна быть равна 1.00")
+
+    scenarios = [
+        ("pessimistic", "Пессимистичный"),
+        ("base", "Базовый"),
+        ("optimistic", "Оптимистичный"),
+    ]
 
     invested_total = total_contributions(
         current_value=current_portfolio_value,
@@ -526,32 +336,13 @@ def build_long_term_forecast(current_portfolio_value, current_allocation):
         contribution_indexation=CONTRIBUTION_INDEXATION,
     )
 
-    scenarios = [
-        ("pessimistic", "🔴 *Пессимистичный*"),
-        ("base", "🟡 *Базовый*"),
-        ("optimistic", "🟢 *Оптимистичный*"),
-    ]
-
-    result = []
-
-    result.append("\n━━━━━━━━━━━━━━━━━━━━")
-    result.append(f"🏦 *Прогноз капитала на {YEARS} лет*")
-    result.append(f"_Пополнение: {MONTHLY_INVEST:,} ₽/мес_")
-    result.append(f"_Индексация пополнений: {CONTRIBUTION_INDEXATION * 100:.1f}%/год_")
-    result.append(f"_Инфляция: {INFLATION * 100:.1f}%/год_")
-    result.append(f"_Издержки модели: {ANNUAL_COST_DRAG * 100:.1f}%/год_")
-    result.append("_Модель: целевая структура портфеля + реинвестирование доходов_\n")
-
-    result.append("*Целевая структура будущих покупок:*")
-
-    for asset_class, weight in TARGET_ALLOCATION.items():
-        result.append(f"  • {asset_class_ru(asset_class)}: {weight * 100:.0f}%")
-
-    result.append("")
+    result = {
+        "invested_total": invested_total,
+        "scenarios": [],
+    }
 
     for scenario_key, scenario_name in scenarios:
         annual_rate = weighted_expected_return(TARGET_ALLOCATION, scenario_key)
-        real_annual = real_rate(annual_rate, INFLATION)
 
         nominal = future_value_with_monthly_contributions(
             current_value=current_portfolio_value,
@@ -564,142 +355,600 @@ def build_long_term_forecast(current_portfolio_value, current_allocation):
         real_value = nominal / ((1 + INFLATION) ** YEARS)
         investment_profit = nominal - invested_total
 
-        annual_withdrawal_4 = nominal * 0.04
-        monthly_withdrawal_4 = annual_withdrawal_4 / 12
-
-        annual_withdrawal_5 = nominal * 0.05
-        monthly_withdrawal_5 = annual_withdrawal_5 / 12
-
-        result.append(scenario_name)
-        result.append(f"  📈 Доходность: *{annual_rate * 100:.1f}%/год*")
-        result.append(f"  📉 Реальная доходность: *{real_annual * 100:.1f}%/год*")
-        result.append(f"  💰 Капитал через {YEARS} лет: *{fmt(nominal)}*")
-        result.append(f"  🛒 В сегодняшних деньгах: *{fmt(real_value)}*")
-        result.append(f"  🧾 Внесено своих денег: *{fmt(invested_total)}*")
-        result.append(f"  📊 Инвестдоход: *{fmt(investment_profit)}*")
-        result.append(f"  🏖 Рента 4%: *{fmt(monthly_withdrawal_4)}/мес*")
-        result.append(f"  🏖 Рента 5%: *{fmt(monthly_withdrawal_5)}/мес*")
-        result.append("")
-
-    base_rate = weighted_expected_return(TARGET_ALLOCATION, "base")
-    milestones = forecast_milestones(current_portfolio_value, base_rate)
-
-    result.append("*Контрольные точки по базовому сценарию:*")
-
-    for item in milestones:
-        result.append(
-            f"  • Через {item['year']} лет: "
-            f"*{fmt(item['nominal'])}* номинал / "
-            f"*{fmt(item['real'])}* в сегодняшних деньгах"
+        result["scenarios"].append(
+            {
+                "key": scenario_key,
+                "name": scenario_name,
+                "annual_rate": annual_rate,
+                "real_rate": real_rate(annual_rate, INFLATION),
+                "nominal": nominal,
+                "real": real_value,
+                "invested_total": invested_total,
+                "investment_profit": investment_profit,
+                "monthly_rent_4": nominal * 0.04 / 12,
+                "monthly_rent_5": nominal * 0.05 / 12,
+            }
         )
 
-    result.append("")
-    result.append(build_rebalance_recommendation(current_allocation))
-    result.append("")
-    result.append("_⚠️ Это не гарантия доходности, а сценарная модель._")
-    result.append("_Для горизонта 17 лет важнее дисциплина пополнений, структура портфеля и ребалансировка._")
-
-    return "\n".join(result)
+    return result
 
 
-# ─────────────────────────────────────────────
-# AI-АНАЛИЗ ДЛЯ ПРОСТОГО ОБЪЯСНЕНИЯ
-# ─────────────────────────────────────────────
+def build_rebalance_text(current_allocation):
+    underweight = []
 
-def ai_analysis(name, current_price, avg_price, week_pct, since_pct):
-    if not ANTHROPIC_API_KEY:
-        return None
+    for asset_class, target_weight in TARGET_ALLOCATION.items():
+        current_weight = current_allocation.get(asset_class, 0.0)
+        diff = current_weight - target_weight
 
-    since_txt = f"{since_pct:+.2f}% с момента покупки" if avg_price else "нет данных"
+        if diff < -0.03:
+            underweight.append((asset_class, abs(diff)))
 
-    prompt = (
-        f'Напиши анализ для домохозяйки (3 простых предложения) про "{name}".\n'
-        f"Цена: {current_price:.2f}₽. За неделю: {week_pct:+.2f}%. {since_txt}.\n"
-        f"1) что происходит с ценой, 2) хорошо это или плохо, 3) держать/докупить/следить.\n"
-        f"Пиши очень просто, без терминов, как подруге. Только текст."
-    )
+    if not underweight:
+        return "Структура близка к целевой. Пополнять можно пропорционально плану."
 
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 200,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-            },
-            timeout=30,
-        )
+    underweight.sort(key=lambda x: x[1], reverse=True)
 
-        r.raise_for_status()
+    main = underweight[0][0]
 
-        return r.json()["content"][0]["text"].strip()
-
-    except Exception as e:
-        return f"Анализ недоступен: {e}"
+    return f"Главный недовес: {asset_class_ru(main)}. Новые пополнения логично направлять туда."
 
 
 # ─────────────────────────────────────────────
 # ФОРМАТИРОВАНИЕ
 # ─────────────────────────────────────────────
 
-def fmt(n):
-    """
-    Форматирует большое число в млн / тыс.
-    """
-
-    if n >= 1_000_000_000:
-        return f"{n / 1_000_000_000:.2f} млрд ₽"
-
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.2f} млн ₽"
-
+def fmt_money(n):
     return f"{n:,.0f} ₽".replace(",", " ")
 
 
-def pct(value):
-    return f"{value * 100:.1f}%"
+def fmt_short(n):
+    sign = "-" if n < 0 else ""
+    n = abs(n)
+
+    if n >= 1_000_000_000:
+        return f"{sign}{n / 1_000_000_000:.2f} млрд ₽"
+
+    if n >= 1_000_000:
+        return f"{sign}{n / 1_000_000:.2f} млн ₽"
+
+    if n >= 1_000:
+        return f"{sign}{n / 1_000:.0f} тыс ₽"
+
+    return f"{sign}{n:.0f} ₽"
+
+
+def fmt_pct(x):
+    return f"{x * 100:.1f}%"
 
 
 # ─────────────────────────────────────────────
-# ОСНОВНОЙ ОТЧЁТ
+# ШРИФТЫ И РИСОВАНИЕ
 # ─────────────────────────────────────────────
 
-def build_report():
-    lines = [
-        "📊 *Еженедельный отчёт по портфелю*",
-        f"📅 {datetime.now().strftime('%d.%m.%Y')}  |  Счёт: {ACCOUNT_NAME}\n",
-    ]
+def load_font(size, bold=False):
+    candidates = []
 
-    try:
-        account_id = get_account_id()
-        portfolio = get_portfolio(account_id)
-        dividends_total = get_dividends_and_coupons(account_id)
+    if bold:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "DejaVuSans-Bold.ttf",
+            "Arial Bold.ttf",
+        ]
+    else:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "DejaVuSans.ttf",
+            "Arial.ttf",
+        ]
 
-    except Exception as e:
-        lines.append(f"⚠️ Ошибка: {e}")
-        return "\n".join(lines)
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+
+    return ImageFont.load_default()
+
+
+def draw_text_fit(draw, text, box, font, fill):
+    x1, y1, x2, y2 = box
+    max_width = x2 - x1
+
+    words = str(text).split()
+    lines = []
+    current = ""
+
+    for word in words:
+        test = word if not current else current + " " + word
+        bbox = draw.textbbox((0, 0), test, font=font)
+
+        if bbox[2] - bbox[0] <= max_width:
+            current = test
+        else:
+            if current:
+                lines.append(current)
+            current = word
+
+    if current:
+        lines.append(current)
+
+    y = y1
+    line_height = font.size + 8 if hasattr(font, "size") else 24
+
+    for line in lines:
+        if y + line_height > y2:
+            break
+
+        draw.text((x1, y), line, font=font, fill=fill)
+        y += line_height
+
+
+def draw_card(draw, x, y, w, h, fill, outline):
+    draw.rounded_rectangle(
+        (x, y, x + w, y + h),
+        radius=32,
+        fill=fill,
+        outline=outline,
+        width=2,
+    )
+
+
+def draw_metric_card(
+    draw,
+    x,
+    y,
+    w,
+    h,
+    title,
+    value,
+    note,
+    value_color,
+    fonts,
+    colors,
+):
+    draw_card(draw, x, y, w, h, colors["card"], colors["border"])
+
+    draw.text(
+        (x + 30, y + 26),
+        title,
+        font=fonts["card_title"],
+        fill=colors["muted"],
+    )
+
+    draw.text(
+        (x + 30, y + 78),
+        value,
+        font=fonts["card_value"],
+        fill=value_color,
+    )
+
+    draw_text_fit(
+        draw,
+        note,
+        (x + 30, y + 145, x + w - 30, y + h - 20),
+        fonts["small"],
+        colors["muted"],
+    )
+
+
+def draw_bar(draw, x, y, w, h, pct_value, fill, bg, label, value_text, fonts, colors):
+    pct_value = max(0, min(pct_value, 1))
+
+    draw.text((x, y), label, font=fonts["text"], fill=colors["dark"])
+    draw.text((x + w - 130, y), value_text, font=fonts["text"], fill=colors["muted"])
+
+    bar_y = y + 38
+
+    draw.rounded_rectangle(
+        (x, bar_y, x + w, bar_y + h),
+        radius=14,
+        fill=bg,
+    )
+
+    if pct_value > 0:
+        draw.rounded_rectangle(
+            (x, bar_y, x + int(w * pct_value), bar_y + h),
+            radius=14,
+            fill=fill,
+        )
+
+
+def draw_target_allocation(draw, x, y, w, fonts, colors):
+    draw.text(
+        (x, y),
+        "Целевая структура будущих покупок",
+        font=fonts["h2"],
+        fill=colors["dark"],
+    )
+
+    y += 70
+
+    bar_colors = {
+        "bond": "#3B82F6",
+        "stock": "#16A34A",
+        "fund": "#A855F7",
+        "cash": "#F59E0B",
+        "other": "#64748B",
+    }
+
+    for asset_class, weight in TARGET_ALLOCATION.items():
+        draw_bar(
+            draw=draw,
+            x=x,
+            y=y,
+            w=w,
+            h=24,
+            pct_value=weight,
+            fill=bar_colors.get(asset_class, "#64748B"),
+            bg=colors["bar_bg"],
+            label=asset_class_ru(asset_class),
+            value_text=f"{weight * 100:.0f}%",
+            fonts=fonts,
+            colors=colors,
+        )
+
+        y += 82
+
+
+def draw_current_allocation(draw, x, y, w, current_allocation, fonts, colors):
+    draw.text(
+        (x, y),
+        "Текущая структура портфеля",
+        font=fonts["h2"],
+        fill=colors["dark"],
+    )
+
+    y += 70
+
+    bar_colors = {
+        "bond": "#3B82F6",
+        "stock": "#16A34A",
+        "fund": "#A855F7",
+        "cash": "#F59E0B",
+        "other": "#64748B",
+    }
+
+    for asset_class in ["bond", "stock", "fund", "cash", "other"]:
+        weight = current_allocation.get(asset_class, 0.0)
+
+        if weight <= 0.005 and asset_class == "other":
+            continue
+
+        draw_bar(
+            draw=draw,
+            x=x,
+            y=y,
+            w=w,
+            h=24,
+            pct_value=weight,
+            fill=bar_colors.get(asset_class, "#64748B"),
+            bg=colors["bar_bg"],
+            label=asset_class_ru(asset_class),
+            value_text=f"{weight * 100:.1f}%",
+            fonts=fonts,
+            colors=colors,
+        )
+
+        y += 82
+
+
+# ─────────────────────────────────────────────
+# ИНФОГРАФИКА PNG
+# ─────────────────────────────────────────────
+
+def create_portfolio_infographic(
+    total_now,
+    total_pnl,
+    dividends_total,
+    total_income,
+    current_allocation,
+    forecast_data,
+    rebalance_text,
+    filename="portfolio_infographic.png",
+):
+    width = 1600
+    height = 2150
+
+    colors = {
+        "bg": "#F4F1EA",
+        "card": "#FFFFFF",
+        "dark": "#1F2933",
+        "muted": "#6B7280",
+        "border": "#E5E0D8",
+        "green": "#166534",
+        "red": "#991B1B",
+        "gold": "#B45309",
+        "blue": "#1D4ED8",
+        "bar_bg": "#ECE7DF",
+    }
+
+    fonts = {
+        "title": load_font(64, bold=True),
+        "subtitle": load_font(30, bold=False),
+        "h2": load_font(38, bold=True),
+        "card_title": load_font(30, bold=True),
+        "card_value": load_font(42, bold=True),
+        "text": load_font(27, bold=False),
+        "text_bold": load_font(27, bold=True),
+        "small": load_font(22, bold=False),
+        "scenario_title": load_font(32, bold=True),
+        "scenario_value": load_font(34, bold=True),
+    }
+
+    img = Image.new("RGB", (width, height), colors["bg"])
+    draw = ImageDraw.Draw(img)
+
+    # Фоновые декоративные элементы
+    draw.ellipse((1180, -180, 1780, 420), fill="#E8DDC9")
+    draw.ellipse((-220, 1450, 360, 2050), fill="#E9E1D4")
+
+    # Заголовок
+    draw.text(
+        (80, 70),
+        "Портфель: долгий срок",
+        font=fonts["title"],
+        fill=colors["dark"],
+    )
+
+    draw.text(
+        (80, 150),
+        f"Еженедельный отчёт • {datetime.now().strftime('%d.%m.%Y')}",
+        font=fonts["subtitle"],
+        fill=colors["muted"],
+    )
+
+    # Верхние карточки
+    pnl_color = colors["green"] if total_pnl >= 0 else colors["red"]
+    income_color = colors["green"] if total_income >= 0 else colors["red"]
+
+    draw_metric_card(
+        draw,
+        80,
+        240,
+        680,
+        185,
+        "Текущий капитал",
+        fmt_short(total_now),
+        "Стоимость портфеля сейчас",
+        colors["dark"],
+        fonts,
+        colors,
+    )
+
+    draw_metric_card(
+        draw,
+        840,
+        240,
+        680,
+        185,
+        "Доход от цены",
+        fmt_short(total_pnl),
+        "Текущий результат по позициям",
+        pnl_color,
+        fonts,
+        colors,
+    )
+
+    draw_metric_card(
+        draw,
+        80,
+        465,
+        680,
+        185,
+        "Купоны и дивиденды",
+        fmt_short(dividends_total),
+        "Получено за всё время",
+        colors["gold"],
+        fonts,
+        colors,
+    )
+
+    draw_metric_card(
+        draw,
+        840,
+        465,
+        680,
+        185,
+        "Общий доход",
+        fmt_short(total_income),
+        "Цена + выплаты",
+        income_color,
+        fonts,
+        colors,
+    )
+
+    # Структура портфеля
+    draw_card(draw, 80, 720, 1440, 500, colors["card"], colors["border"])
+
+    draw_current_allocation(
+        draw=draw,
+        x=120,
+        y=760,
+        w=620,
+        current_allocation=current_allocation,
+        fonts=fonts,
+        colors=colors,
+    )
+
+    draw_target_allocation(
+        draw=draw,
+        x=840,
+        y=760,
+        w=620,
+        fonts=fonts,
+        colors=colors,
+    )
+
+    # Рекомендация
+    draw_card(draw, 80, 1260, 1440, 150, "#FFF8E7", "#EACB7A")
+
+    draw.text(
+        (120, 1295),
+        "Рекомендация по новым пополнениям",
+        font=fonts["card_title"],
+        fill=colors["gold"],
+    )
+
+    draw_text_fit(
+        draw,
+        rebalance_text,
+        (120, 1345, 1460, 1400),
+        fonts["text"],
+        colors["dark"],
+    )
+
+    # Прогноз
+    draw.text(
+        (80, 1480),
+        f"Прогноз на {YEARS} лет",
+        font=fonts["h2"],
+        fill=colors["dark"],
+    )
+
+    draw.text(
+        (80, 1535),
+        f"Пополнение: {fmt_money(MONTHLY_INVEST)} / мес • Инфляция: {INFLATION * 100:.1f}% • Индексация: {CONTRIBUTION_INDEXATION * 100:.1f}%",
+        font=fonts["small"],
+        fill=colors["muted"],
+    )
+
+    scenario_colors = {
+        "pessimistic": "#991B1B",
+        "base": "#B45309",
+        "optimistic": "#166534",
+    }
+
+    y = 1605
+
+    for item in forecast_data["scenarios"]:
+        key = item["key"]
+
+        draw_card(draw, 80, y, 1440, 150, colors["card"], colors["border"])
+
+        accent = scenario_colors.get(key, colors["dark"])
+
+        draw.rounded_rectangle(
+            (80, y, 96, y + 150),
+            radius=8,
+            fill=accent,
+        )
+
+        draw.text(
+            (120, y + 28),
+            item["name"],
+            font=fonts["scenario_title"],
+            fill=accent,
+        )
+
+        draw.text(
+            (120, y + 82),
+            f"{item['annual_rate'] * 100:.1f}% годовых",
+            font=fonts["small"],
+            fill=colors["muted"],
+        )
+
+        draw.text(
+            (420, y + 26),
+            "Капитал",
+            font=fonts["small"],
+            fill=colors["muted"],
+        )
+
+        draw.text(
+            (420, y + 65),
+            fmt_short(item["nominal"]),
+            font=fonts["scenario_value"],
+            fill=colors["dark"],
+        )
+
+        draw.text(
+            (760, y + 26),
+            "В ценах сегодня",
+            font=fonts["small"],
+            fill=colors["muted"],
+        )
+
+        draw.text(
+            (760, y + 65),
+            fmt_short(item["real"]),
+            font=fonts["scenario_value"],
+            fill=colors["dark"],
+        )
+
+        draw.text(
+            (1130, y + 26),
+            "Рента 4%",
+            font=fonts["small"],
+            fill=colors["muted"],
+        )
+
+        draw.text(
+            (1130, y + 65),
+            f"{fmt_short(item['monthly_rent_4'])}/мес",
+            font=fonts["scenario_value"],
+            fill=colors["green"],
+        )
+
+        y += 180
+
+    # Нижний блок: вложено своих денег
+    invested_total = forecast_data["invested_total"]
+
+    draw_card(draw, 80, y + 20, 1440, 145, "#EEF7EE", "#B8D9B8")
+
+    draw.text(
+        (120, y + 55),
+        "Собственные вложения за весь период",
+        font=fonts["card_title"],
+        fill=colors["green"],
+    )
+
+    draw.text(
+        (120, y + 103),
+        fmt_short(invested_total),
+        font=fonts["scenario_value"],
+        fill=colors["dark"],
+    )
+
+    draw.text(
+        (540, y + 107),
+        "текущий портфель + будущие ежемесячные пополнения",
+        font=fonts["small"],
+        fill=colors["muted"],
+    )
+
+    # Footer
+    draw.text(
+        (80, height - 90),
+        "⚠️ Сценарная модель, не гарантия доходности. Данные: Т-Инвестиции API.",
+        font=fonts["small"],
+        fill=colors["muted"],
+    )
+
+    img.save(filename, quality=95)
+    return filename
+
+
+# ─────────────────────────────────────────────
+# СБОР ДАННЫХ
+# ─────────────────────────────────────────────
+
+def collect_portfolio_data():
+    account_id = get_account_id()
+    portfolio = get_portfolio(account_id)
+    dividends_total = get_dividends_and_coupons(account_id)
 
     positions = portfolio.get("positions", [])
 
     if not positions:
-        lines.append("Портфель пуст.")
-        return "\n".join(lines)
+        raise Exception("Портфель пуст.")
 
     total_now = moneyval(portfolio.get("totalAmountPortfolio"))
     total_pnl = moneyval(portfolio.get("expectedYield"))
-    total_week = 0.0
-
-    historical_cagr_list = []
 
     allocation_values = {
         "bond": 0.0,
@@ -708,6 +957,8 @@ def build_report():
         "cash": 0.0,
         "other": 0.0,
     }
+
+    top_positions = []
 
     for pos in positions:
         figi = pos.get("figi", "")
@@ -719,9 +970,6 @@ def build_report():
         name, kind, ticker = get_instrument_info(figi)
 
         current_price = moneyval(pos.get("currentPrice"))
-        avg_price = moneyval(pos.get("averagePositionPrice"))
-        pnl = moneyval(pos.get("expectedYield"))
-
         pos_val = current_price * qty
 
         asset_class = classify_asset(kind, name, ticker)
@@ -731,169 +979,74 @@ def build_report():
 
         allocation_values[asset_class] += pos_val
 
-        since_pct = (pnl / (avg_price * qty) * 100) if avg_price and qty else 0.0
+        top_positions.append(
+            {
+                "name": name,
+                "ticker": ticker,
+                "asset_class": asset_class,
+                "value": pos_val,
+            }
+        )
 
-        lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"*{name}* ({qty:.0f} шт.)")
-        lines.append(f"  💰 Цена: *{current_price:.2f} ₽*  |  Позиция: *{pos_val:,.2f} ₽*")
-
-        lines.append(f"  🧩 Класс: *{asset_class_ru(asset_class)}*")
-
-        if avg_price:
-            arr = "🟢" if pnl >= 0 else "🔴"
-            lines.append(f"  {arr} С покупки: {pnl:+.2f} ₽ ({since_pct:+.2f}%)")
-
-        p1, p2 = get_candles_week(figi)
-        week_pct = 0.0
-
-        if p1 and p2 and p1 > 0:
-            diff = p2 - p1
-            week_pct = diff / p1 * 100
-            pos_diff = diff * qty
-            total_week += pos_diff
-
-            arr_w = "🟢" if diff >= 0 else "🔴"
-
-            lines.append(
-                f"  {arr_w} За неделю: "
-                f"{diff:+.2f} ₽ ({week_pct:+.2f}%)  |  "
-                f"по позиции: {pos_diff:+.2f} ₽"
-            )
-
-        else:
-            lines.append("  📉 За неделю: нет данных")
-
-        analysis = ai_analysis(name, current_price, avg_price, week_pct, since_pct)
-
-        if analysis:
-            lines.append(f"\n  🤖 _{analysis}_")
-
-        cagr, years_data = get_historical_cagr(figi)
-
-        if cagr is not None:
-            historical_cagr_list.append(
-                {
-                    "name": name,
-                    "cagr": cagr,
-                    "years_data": years_data,
-                    "asset_class": asset_class,
-                    "value": pos_val,
-                }
-            )
-
-        lines.append("")
-
-    # ─────────────────────────────────────────
-    # ИТОГИ ПОРТФЕЛЯ
-    # ─────────────────────────────────────────
-
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"💼 *Итого: {total_now:,.2f} ₽*")
-
-    arr_pnl = "🟢" if total_pnl >= 0 else "🔴"
-    lines.append(f"{arr_pnl} *Доход от изменения цены: {total_pnl:+,.2f} ₽*")
-
-    arr_div = "💰" if dividends_total > 0 else "📭"
-    lines.append(f"{arr_div} *Купоны и дивиденды за всё время: {dividends_total:+,.2f} ₽*")
-
-    total_income = total_pnl + dividends_total
-    arr_tot = "🟢" if total_income >= 0 else "🔴"
-    lines.append(f"{arr_tot} *Общий доход: {total_income:+,.2f} ₽*")
-
-    if total_week != 0:
-        arr_w = "🟢" if total_week >= 0 else "🔴"
-        lines.append(f"{arr_w} *За неделю: {total_week:+,.2f} ₽*")
-
-    # ─────────────────────────────────────────
-    # ТЕКУЩАЯ СТРУКТУРА ПОРТФЕЛЯ
-    # ─────────────────────────────────────────
-
-    lines.append("\n━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🧩 *Текущая структура портфеля*")
+    if total_now <= 0:
+        raise Exception("Не удалось определить текущую стоимость портфеля.")
 
     current_allocation = {}
 
-    if total_now > 0:
-        for asset_class, value in allocation_values.items():
-            weight = value / total_now
-            current_allocation[asset_class] = weight
+    for asset_class, value in allocation_values.items():
+        current_allocation[asset_class] = value / total_now if total_now > 0 else 0.0
 
-            if value > 0:
-                lines.append(
-                    f"  • {asset_class_ru(asset_class)}: "
-                    f"*{weight * 100:.1f}%*  |  {fmt(value)}"
-                )
-    else:
-        current_allocation = {
-            "bond": 0.0,
-            "stock": 0.0,
-            "fund": 0.0,
-            "cash": 0.0,
-            "other": 0.0,
-        }
+    total_income = total_pnl + dividends_total
 
-    # ─────────────────────────────────────────
-    # ИСТОРИЧЕСКАЯ ДОХОДНОСТЬ — ТОЛЬКО СПРАВОЧНО
-    # ─────────────────────────────────────────
+    forecast_data = build_forecast_data(total_now)
 
-    if historical_cagr_list:
-        lines.append("\n━━━━━━━━━━━━━━━━━━━━")
-        lines.append("📈 *Историческая динамика цены*")
-        lines.append("_Справочно. Не используется как главный прогноз на 17 лет._")
+    rebalance_text = build_rebalance_text(current_allocation)
 
-        historical_cagr_list.sort(key=lambda x: x["value"], reverse=True)
-
-        for item in historical_cagr_list[:10]:
-            lines.append(
-                f"  • {item['name']}: "
-                f"{item['cagr'] * 100:+.1f}%/год "
-                f"по цене за {item['years_data']:.1f} лет"
-            )
-
-    # ─────────────────────────────────────────
-    # ДОЛГОСРОЧНЫЙ ПРОГНОЗ
-    # ─────────────────────────────────────────
-
-    lines.append(build_long_term_forecast(total_now, current_allocation))
-
-    lines.append("\n_Данные: Т-Инвестиции API_")
-
-    return "\n".join(lines)
+    return {
+        "total_now": total_now,
+        "total_pnl": total_pnl,
+        "dividends_total": dividends_total,
+        "total_income": total_income,
+        "current_allocation": current_allocation,
+        "forecast_data": forecast_data,
+        "rebalance_text": rebalance_text,
+        "top_positions": top_positions,
+    }
 
 
 # ─────────────────────────────────────────────
-# ОТПРАВКА В TELEGRAM
+# TELEGRAM
 # ─────────────────────────────────────────────
 
-def send(text):
-    max_len = 4000
-    parts = []
+def send_text(text):
+    r = requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={
+            "chat_id": CHAT_ID,
+            "text": text,
+        },
+        timeout=20,
+    )
 
-    while len(text) > max_len:
-        split_at = text.rfind("━━━", 0, max_len)
+    r.raise_for_status()
 
-        if split_at == -1:
-            split_at = max_len
 
-        parts.append(text[:split_at])
-        text = text[split_at:]
-
-    parts.append(text)
-
-    for part in parts:
+def send_photo(filename, caption=""):
+    with open(filename, "rb") as photo:
         r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+            data={
                 "chat_id": CHAT_ID,
-                "text": part,
-                "parse_mode": "Markdown",
+                "caption": caption,
             },
-            timeout=15,
+            files={
+                "photo": photo,
+            },
+            timeout=40,
         )
 
-        r.raise_for_status()
-
-    print(f"✅ Отправлено ({len(parts)} сообщений)!")
+    r.raise_for_status()
+    print("✅ Инфографика отправлена в Telegram!")
 
 
 # ─────────────────────────────────────────────
@@ -901,6 +1054,25 @@ def send(text):
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    report = build_report()
-    print(report)
-    send(report)
+    try:
+        data = collect_portfolio_data()
+
+        image_file = create_portfolio_infographic(
+            total_now=data["total_now"],
+            total_pnl=data["total_pnl"],
+            dividends_total=data["dividends_total"],
+            total_income=data["total_income"],
+            current_allocation=data["current_allocation"],
+            forecast_data=data["forecast_data"],
+            rebalance_text=data["rebalance_text"],
+            filename="portfolio_infographic.png",
+        )
+
+        caption = f"📊 Портфель «{ACCOUNT_NAME}» • {datetime.now().strftime('%d.%m.%Y')}"
+
+        send_photo(image_file, caption=caption)
+
+    except Exception as e:
+        error_text = f"⚠️ Ошибка формирования инфографики: {e}"
+        print(error_text)
+        send_text(error_text)
