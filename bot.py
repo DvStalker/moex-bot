@@ -357,7 +357,7 @@ def build_report():
         # ОФЗ и корп. облигации: купон ~10-12%, цена стабильна → полная доходность ~10%
         fallback_cagr = 0.10
         avg_full_return = fallback_cagr
-        lines.append(f"_Исторические свечи недоступны — используем консервативную оценку {avg_full_return*100:.0f}%/год для облигаций_
+        lines.append(f"_Исторические свечи недоступны. Используем консервативную оценку {avg_full_return*100:.0f}%/год для облигаций_
 ")
 
         pessimistic = avg_full_return * 0.6
