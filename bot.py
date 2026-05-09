@@ -85,36 +85,48 @@ def get_candles_week(figi):
 
 def get_historical_cagr(figi):
     """
-    Среднегодовая доходность (CAGR) по месячным свечам за максимальный период.
-    Возвращает (cagr_float, years_available).
-    Для облигаций/фондов добавляем ~6% купонной/дивидендной доходности.
+    Пробуем получить CAGR в порядке: месячные → недельные → дневные свечи.
+    Берём максимально доступный период, минимум 2 точки.
     """
-    try:
-        now = datetime.now(timezone.utc)
-        from_date = now - timedelta(days=365 * 17)
-        data = ti_post(
-            "/tinkoff.public.invest.api.contract.v1.MarketDataService/GetCandles",
-            {
-                "figi": figi,
-                "from": from_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "to": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "interval": "CANDLE_INTERVAL_MONTH"
-            }
-        )
-        candles = data.get("candles", [])
-        if len(candles) < 6:
-            return None, None
+    now = datetime.now(timezone.utc)
 
-        p_first = quotation(candles[0].get("close"))
-        p_last = quotation(candles[-1].get("close"))
-        if not p_first or not p_last or p_first <= 0:
-            return None, None
+    intervals = [
+        ("CANDLE_INTERVAL_MONTH",  365 * 17, 12.0),   # месячные, делитель 12
+        ("CANDLE_INTERVAL_WEEK",   365 * 5,  52.0),    # недельные, делитель 52
+        ("CANDLE_INTERVAL_DAY",    365 * 3,  365.0),   # дневные, делитель 365
+    ]
 
-        years_avail = len(candles) / 12
-        price_cagr = (p_last / p_first) ** (1 / years_avail) - 1
-        return price_cagr, round(years_avail, 1)
-    except Exception:
-        return None, None
+    for interval, days_back, per_year in intervals:
+        try:
+            from_date = now - timedelta(days=days_back)
+            data = ti_post(
+                "/tinkoff.public.invest.api.contract.v1.MarketDataService/GetCandles",
+                {
+                    "figi": figi,
+                    "from": from_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "to": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "interval": interval
+                }
+            )
+            candles = data.get("candles", [])
+            if len(candles) < 2:
+                continue
+
+            p_first = quotation(candles[0].get("close"))
+            p_last  = quotation(candles[-1].get("close"))
+            if not p_first or not p_last or p_first <= 0:
+                continue
+
+            years_avail = len(candles) / per_year
+            if years_avail < 0.05:  # меньше ~18 дней — не считаем
+                continue
+
+            price_cagr = (p_last / p_first) ** (1 / years_avail) - 1
+            return price_cagr, round(years_avail, 1)
+        except Exception:
+            continue
+
+    return None, None
 
 
 def pension_forecast(annual_rate, current_portfolio_value=0):
@@ -341,7 +353,38 @@ def build_report():
         lines.append(f"_Вложено своих денег за {YEARS} лет: {fmt(MONTHLY_INVEST * 12 * YEARS)}_")
         lines.append("_⚠️ Прогноз на основе исторических данных, не гарантия_")
     else:
-        lines.append("_Недостаточно исторических данных для прогноза_")
+        # Нет данных по свечам — используем консервативную оценку для облигационного портфеля
+        # ОФЗ и корп. облигации: купон ~10-12%, цена стабильна → полная доходность ~10%
+        fallback_cagr = 0.10
+        avg_full_return = fallback_cagr
+        lines.append(f"_Исторические свечи недоступны — используем консервативную оценку {avg_full_return*100:.0f}%/год для облигаций_
+")
+
+        pessimistic = avg_full_return * 0.6
+        base        = avg_full_return
+        optimistic  = avg_full_return * 1.4
+
+        lines.append(f"*Оценочная доходность: {avg_full_return*100:.1f}%/год*")
+        lines.append(f"_База {YEARS} лет | пополнение {MONTHLY_INVEST:,} ₽/мес | текущий портфель {total_now:,.0f} ₽_
+")
+
+        for label, rate, emoji in [
+            ("Пессимистичный", pessimistic, "🔴"),
+            ("Базовый",        base,        "🟡"),
+            ("Оптимистичный",  optimistic,  "🟢"),
+        ]:
+            nominal, real = pension_forecast(rate, total_now)
+            invested = MONTHLY_INVEST * 12 * YEARS
+            profit   = nominal - invested - total_now
+            lines.append(f"{emoji} *{label}* ({rate*100:.1f}%/год):")
+            lines.append(f"  💰 Номинал: *{fmt(nominal)}*")
+            lines.append(f"  📉 В ценах сегодня: *{fmt(real)}*")
+            lines.append(f"  📈 Прибыль сверх вложений: *{fmt(profit)}*")
+            lines.append(f"  🗓 Вложено за {YEARS} лет: {fmt(invested + total_now)}
+")
+
+        lines.append(f"_Вложено своих денег за {YEARS} лет: {fmt(MONTHLY_INVEST * 12 * YEARS)}_")
+        lines.append("_⚠️ Прогноз оценочный, не гарантия_")
 
     lines.append("\n_Данные: Т-Инвестиции API_")
     return "\n".join(lines)
