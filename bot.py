@@ -357,16 +357,15 @@ def build_report():
         # ОФЗ и корп. облигации: купон ~10-12%, цена стабильна → полная доходность ~10%
         fallback_cagr = 0.10
         avg_full_return = fallback_cagr
-        lines.append(f"_Исторические свечи недоступны. Используем консервативную оценку {avg_full_return*100:.0f}%/год для облигаций_
-")
+        pct_str = str(int(avg_full_return*100))
+        lines.append("_Нет исторических свечей. Оценка: " + pct_str + "%/год для облигаций_")
 
         pessimistic = avg_full_return * 0.6
         base        = avg_full_return
         optimistic  = avg_full_return * 1.4
 
         lines.append(f"*Оценочная доходность: {avg_full_return*100:.1f}%/год*")
-        lines.append(f"_База {YEARS} лет | пополнение {MONTHLY_INVEST:,} ₽/мес | текущий портфель {total_now:,.0f} ₽_
-")
+        lines.append(f"_База {YEARS} лет | пополнение {MONTHLY_INVEST:,} ₽/мес | текущий портфель {total_now:,.0f} ₽_")
 
         for label, rate, emoji in [
             ("Пессимистичный", pessimistic, "🔴"),
@@ -380,8 +379,7 @@ def build_report():
             lines.append(f"  💰 Номинал: *{fmt(nominal)}*")
             lines.append(f"  📉 В ценах сегодня: *{fmt(real)}*")
             lines.append(f"  📈 Прибыль сверх вложений: *{fmt(profit)}*")
-            lines.append(f"  🗓 Вложено за {YEARS} лет: {fmt(invested + total_now)}
-")
+            lines.append(f"  🗓 Вложено за {YEARS} лет: {fmt(invested + total_now)}")
 
         lines.append(f"_Вложено своих денег за {YEARS} лет: {fmt(MONTHLY_INVEST * 12 * YEARS)}_")
         lines.append("_⚠️ Прогноз оценочный, не гарантия_")
