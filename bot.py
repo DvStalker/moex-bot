@@ -48,7 +48,7 @@ CONTRIBUTION_INDEXATION = 0.00
 # Издержки модели: комиссии, налоги, спреды, ошибки, неидеальная ребалансировка
 ANNUAL_COST_DRAG = 0.005
 
-# Целевая структура под твой текущий портфель и горизонт 17 лет
+# Целевая структура под текущий портфель и горизонт 17 лет
 TARGET_ALLOCATION = {
     "bond": 0.42,
     "stock": 0.23,
@@ -56,7 +56,7 @@ TARGET_ALLOCATION = {
     "cash": 0.02,
 }
 
-# Ожидаемые доходности по классам активов
+# Сценарные доходности по классам активов
 EXPECTED_RETURNS = {
     "bond": {
         "pessimistic": 0.08,
@@ -88,20 +88,24 @@ EXPECTED_RETURNS = {
 # Ручная классификация твоих инструментов
 MANUAL_ASSET_CLASS = {
     "НЛМК": "stock",
+    "NLMK": "stock",
     "Норильский никель": "stock",
+    "Норникель": "stock",
+    "GMKN": "stock",
     "ГМК": "stock",
 
-    "Кредитный поток 4.2": "bond",
-    "ОФЗ 26207": "bond",
-    "ОФЗ 26218": "bond",
-    "ОФЗ 26226": "bond",
-    "ОФЗ 26240": "bond",
-    "РЖД БО 001Р-44R": "bond",
-    "Роснефть 002Р-05": "bond",
-    "Сбербанк 002Р-SBER": "bond",
+    "Кредитный поток": "bond",
+    "ОФЗ": "bond",
+    "SU262": "bond",
+    "РЖД": "bond",
+    "RZD": "bond",
+    "Роснефть": "bond",
+    "Сбербанк 002Р": "bond",
     "SBER": "bond",
 
     "Пассивный доход": "fund",
+    "TMOS": "fund",
+    "LQDT": "fund",
 
     "Рубль": "cash",
     "RUB": "cash",
@@ -140,14 +144,20 @@ def moneyval(mv):
     if not mv:
         return 0.0
 
-    return int(mv.get("units", 0)) + int(mv.get("nano", 0)) / 1e9
+    units = int(mv.get("units", 0))
+    nano = int(mv.get("nano", 0))
+
+    return units + nano / 1e9
 
 
 def quotation(q):
     if not q:
         return 0.0
 
-    return int(q.get("units", 0)) + int(q.get("nano", 0)) / 1e9
+    units = int(q.get("units", 0))
+    nano = int(q.get("nano", 0))
+
+    return units + nano / 1e9
 
 
 def get_account_id():
@@ -230,29 +240,99 @@ def get_dividends_and_coupons(account_id):
 # КЛАССИФИКАЦИЯ АКТИВОВ
 # ─────────────────────────────────────────────
 
-def classify_asset(kind, name="", ticker=""):
-    name_clean = str(name).strip()
-    ticker_clean = str(ticker).strip()
+def classify_asset(pos=None, kind="", name="", ticker=""):
+    pos = pos or {}
+
+    instrument_type = str(pos.get("instrumentType", "")).lower()
+
+    text = " ".join(
+        [
+            str(kind),
+            str(name),
+            str(ticker),
+            str(pos.get("figi", "")),
+            str(pos.get("instrumentUid", "")),
+            str(pos.get("ticker", "")),
+            instrument_type,
+        ]
+    ).lower()
 
     for manual_name, asset_class in MANUAL_ASSET_CLASS.items():
-        if manual_name.lower() in name_clean.lower():
+        if manual_name.lower() in text:
             return asset_class
 
-        if manual_name.lower() in ticker_clean.lower():
-            return asset_class
-
-    text = f"{kind} {name} {ticker}".lower()
-
-    if any(w in text for w in ["bond", "облига", "офз", "замещающ", "еврооблиг", "бо ", "002р"]):
+    if any(x in instrument_type for x in ["bond", "облига"]):
         return "bond"
 
-    if any(w in text for w in ["etf", "fund", "бпиф", "пиф", "фонд", "пассивный доход", "ликвидность"]):
-        return "fund"
-
-    if any(w in text for w in ["share", "stock", "акци", "нлмк", "норильский никель", "гмк"]):
+    if any(x in instrument_type for x in ["share", "stock", "акци"]):
         return "stock"
 
-    if any(w in text for w in ["currency", "money", "cash", "рубль", "доллар", "юань", "eur", "usd", "cny", "rub"]):
+    if any(x in instrument_type for x in ["etf", "fund", "фонд", "etn"]):
+        return "fund"
+
+    if any(x in instrument_type for x in ["currency", "cash", "money"]):
+        return "cash"
+
+    if any(
+        w in text
+        for w in [
+            "instrument_type_bond",
+            "bond",
+            "облига",
+            "офз",
+            "su262",
+            "замещающ",
+            "еврооблиг",
+            "бо ",
+            "002р",
+        ]
+    ):
+        return "bond"
+
+    if any(
+        w in text
+        for w in [
+            "instrument_type_etf",
+            "etf",
+            "fund",
+            "бпиф",
+            "пиф",
+            "фонд",
+            "пассивный доход",
+            "ликвидность",
+        ]
+    ):
+        return "fund"
+
+    if any(
+        w in text
+        for w in [
+            "instrument_type_share",
+            "share",
+            "stock",
+            "акци",
+            "нлмк",
+            "норильский",
+            "гмк",
+        ]
+    ):
+        return "stock"
+
+    if any(
+        w in text
+        for w in [
+            "currency",
+            "money",
+            "cash",
+            "рубль",
+            "доллар",
+            "юань",
+            "eur",
+            "usd",
+            "cny",
+            "rub",
+        ]
+    ):
         return "cash"
 
     return "other"
@@ -295,7 +375,6 @@ def future_value(current_value, monthly_invest, years, annual_rate):
     monthly_rate = (1 + annual_rate) ** (1 / 12) - 1
 
     fv = current_value * ((1 + annual_rate) ** years)
-
     payment = monthly_invest
 
     for month in range(1, years * 12 + 1):
@@ -348,18 +427,11 @@ def build_forecast_data(total_now):
                 "name": name,
                 "annual_rate": rate,
                 "real_rate": real_rate(rate),
-
                 "nominal": nominal,
                 "real": real_value,
-
                 "invested_total": invested,
                 "investment_profit": nominal - invested,
-
-                # Доход в будущих рублях — справочно
-                "monthly_income_4_nominal": nominal * 0.04 / 12,
-                "monthly_income_5_nominal": nominal * 0.05 / 12,
-
-                # Главное: доход в текущих деньгах
+                # Доход в месяц именно в текущих деньгах
                 "monthly_income_4_real": real_value * 0.04 / 12,
                 "monthly_income_5_real": real_value * 0.05 / 12,
             }
@@ -402,7 +474,7 @@ def build_rebalance_details(current_allocation):
 
 
 def build_rebalance_text(current_allocation):
-    details, underweight, overweight = build_rebalance_details(current_allocation)
+    _, underweight, overweight = build_rebalance_details(current_allocation)
 
     if not underweight and not overweight:
         return "Структура близка к целевой. Новые пополнения можно распределять по плану."
@@ -412,29 +484,23 @@ def build_rebalance_text(current_allocation):
     if underweight:
         main = underweight[0]
         parts.append(
-            f"Главный недовес: {asset_class_ru(main['asset_class'])} "
-            f"({abs(main['diff']) * 100:.1f} п.п.)."
+            f"Недовес: {asset_class_ru(main['asset_class'])} "
+            f"{abs(main['diff']) * 100:.1f} п.п."
         )
 
     if overweight:
-        main_over = overweight[0]
+        main = overweight[0]
         parts.append(
-            f"Главный перевес: {asset_class_ru(main_over['asset_class'])} "
-            f"({main_over['diff'] * 100:.1f} п.п.)."
+            f"Перевес: {asset_class_ru(main['asset_class'])} "
+            f"{main['diff'] * 100:.1f} п.п."
         )
 
-    if underweight:
-        parts.append("Новые пополнения лучше направлять в недостающие классы.")
+    parts.append("Пополнение направляем в недостающие классы; перевес временно не увеличиваем.")
 
     return " ".join(parts)
 
 
 def build_next_contribution_plan(current_allocation):
-    """
-    Распределяет следующее пополнение 60 000 ₽ в классы с недовесом.
-    Если недовесов нет — по целевой структуре.
-    """
-
     _, underweight, _ = build_rebalance_details(current_allocation)
 
     plan = {
@@ -454,8 +520,7 @@ def build_next_contribution_plan(current_allocation):
 
     for row in underweight:
         asset_class = row["asset_class"]
-        gap = abs(row["diff"])
-        plan[asset_class] = MONTHLY_INVEST * gap / total_gap
+        plan[asset_class] = MONTHLY_INVEST * abs(row["diff"]) / total_gap
 
     return plan
 
@@ -478,14 +543,10 @@ def fmt_short(n):
     if n >= 1_000_000:
         return f"{sign}{n / 1_000_000:.2f} млн ₽"
 
-    if n >= 1_000:
+    if n >= 10_000:
         return f"{sign}{n / 1_000:.0f} тыс ₽"
 
-    return f"{sign}{n:.0f} ₽"
-
-
-def fmt_pct(value):
-    return f"{value * 100:.1f}%"
+    return f"{sign}{n:,.0f} ₽".replace(",", " ")
 
 
 # ─────────────────────────────────────────────
@@ -494,8 +555,12 @@ def fmt_pct(value):
 
 def load_font(size, bold=False):
     paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if bold
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
+        if bold
+        else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
         "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
         "Arial Bold.ttf" if bold else "Arial.ttf",
     ]
@@ -511,10 +576,9 @@ def load_font(size, bold=False):
 
 def draw_wrapped(draw, text, xy, max_width, font, fill, line_gap=8):
     x, y = xy
-    words = str(text).split()
     line = ""
 
-    for word in words:
+    for word in str(text).split():
         test = word if not line else line + " " + word
         bbox = draw.textbbox((0, 0), test, font=font)
 
@@ -577,9 +641,12 @@ def draw_bar(draw, x, y, w, label, value, color, fonts, colors):
         fill=colors["text"],
     )
 
+    pct = f"{value * 100:.1f}%"
+    tw = draw.textbbox((0, 0), pct, font=fonts["text"])[2]
+
     draw.text(
-        (x + w - 120, y),
-        f"{value * 100:.1f}%",
+        (x + w - tw, y),
+        pct,
         font=fonts["text"],
         fill=colors["muted"],
     )
@@ -610,23 +677,15 @@ def draw_contribution_plan(draw, x, y, w, plan, fonts, colors):
 
     draw.text(
         (x + 32, y + 76),
-        f"{fmt_money(MONTHLY_INVEST)}",
+        fmt_money(MONTHLY_INVEST),
         font=fonts["card_value"],
         fill=colors["green"],
     )
 
-    line_y = y + 140
-
-    items = [
-        ("bond", "Облигации"),
-        ("stock", "Акции"),
-        ("fund", "Фонды"),
-        ("cash", "Деньги"),
-    ]
-
+    line_y = y + 142
     col_x = x + 32
 
-    for asset_class, label in items:
+    for asset_class in ["bond", "stock", "fund", "cash"]:
         amount = plan.get(asset_class, 0.0)
 
         if amount < 1:
@@ -634,7 +693,7 @@ def draw_contribution_plan(draw, x, y, w, plan, fonts, colors):
 
         draw.text(
             (col_x, line_y),
-            f"{label}: {fmt_short(amount)}",
+            f"{asset_class_ru(asset_class)}: {fmt_short(amount)}",
             font=fonts["small"],
             fill=colors["muted"],
         )
@@ -652,7 +711,7 @@ def draw_contribution_plan(draw, x, y, w, plan, fonts, colors):
 
 def create_infographic(data, filename="portfolio_infographic.png"):
     width = 1600
-    height = 2300
+    height = 2520
 
     colors = {
         "bg": "#0F1117",
@@ -669,6 +728,7 @@ def create_infographic(data, filename="portfolio_infographic.png"):
         "blue": "#60A5FA",
         "purple": "#A78BFA",
         "bar_bg": "#2A2F3B",
+        "other": "#94A3B8",
     }
 
     fonts = {
@@ -678,7 +738,6 @@ def create_infographic(data, filename="portfolio_infographic.png"):
         "card_title": load_font(30, True),
         "card_value": load_font(42, True),
         "text": load_font(27),
-        "text_bold": load_font(27, True),
         "small": load_font(22),
         "tiny": load_font(18),
         "scenario_title": load_font(32, True),
@@ -688,10 +747,10 @@ def create_infographic(data, filename="portfolio_infographic.png"):
     img = Image.new("RGB", (width, height), colors["bg"])
     draw = ImageDraw.Draw(img)
 
-    # Декор
+    # Декоративный фон
     draw.ellipse((1120, -260, 1820, 460), fill="#182033")
-    draw.ellipse((-260, 1580, 380, 2240), fill="#1A261E")
-    draw.ellipse((1080, 1680, 1780, 2380), fill="#201A2E")
+    draw.ellipse((-260, 1660, 380, 2320), fill="#1A261E")
+    draw.ellipse((1080, 1780, 1780, 2520), fill="#201A2E")
 
     # Заголовок
     draw.text(
@@ -710,15 +769,10 @@ def create_infographic(data, filename="portfolio_infographic.png"):
 
     draw.text(
         (80, 198),
-        "Прогноз считает доход в месяц в текущей покупательной способности",
+        "Доход в месяц показан в текущей покупательной способности",
         font=fonts["small"],
         fill=colors["gold"],
     )
-
-    total_now = data["total_now"]
-    total_pnl = data["total_pnl"]
-    dividends_total = data["dividends_total"]
-    total_income = data["total_income"]
 
     # Верхние метрики
     draw_metric(
@@ -728,7 +782,7 @@ def create_infographic(data, filename="portfolio_infographic.png"):
         680,
         185,
         "Текущий капитал",
-        fmt_short(total_now),
+        fmt_short(data["total_now"]),
         "Стоимость портфеля сейчас",
         colors["text"],
         fonts,
@@ -742,9 +796,9 @@ def create_infographic(data, filename="portfolio_infographic.png"):
         680,
         185,
         "Доход от цены",
-        fmt_short(total_pnl),
+        fmt_short(data["total_pnl"]),
         "Результат по позициям",
-        colors["green"] if total_pnl >= 0 else colors["red"],
+        colors["green"] if data["total_pnl"] >= 0 else colors["red"],
         fonts,
         colors,
     )
@@ -756,7 +810,7 @@ def create_infographic(data, filename="portfolio_infographic.png"):
         680,
         185,
         "Купоны и дивиденды",
-        fmt_short(dividends_total),
+        fmt_short(data["dividends_total"]),
         "Получено за всё время",
         colors["gold"],
         fonts,
@@ -770,9 +824,9 @@ def create_infographic(data, filename="portfolio_infographic.png"):
         680,
         185,
         "Общий доход",
-        fmt_short(total_income),
+        fmt_short(data["total_income"]),
         "Цена + выплаты",
-        colors["green"] if total_income >= 0 else colors["red"],
+        colors["green"] if data["total_income"] >= 0 else colors["red"],
         fonts,
         colors,
     )
@@ -785,7 +839,7 @@ def create_infographic(data, filename="portfolio_infographic.png"):
         "stock": colors["green"],
         "fund": colors["purple"],
         "cash": colors["gold"],
-        "other": "#94A3B8",
+        "other": colors["other"],
     }
 
     draw.text(
@@ -798,7 +852,9 @@ def create_infographic(data, filename="portfolio_infographic.png"):
     y = 870
 
     for asset_class in ["bond", "stock", "fund", "cash", "other"]:
-        if asset_class == "other" and data["current_allocation"].get(asset_class, 0) <= 0.005:
+        val = data["current_allocation"].get(asset_class, 0)
+
+        if asset_class == "other" and val <= 0.005:
             continue
 
         draw_bar(
@@ -807,7 +863,7 @@ def create_infographic(data, filename="portfolio_infographic.png"):
             y,
             620,
             asset_class_ru(asset_class),
-            data["current_allocation"].get(asset_class, 0),
+            val,
             palette[asset_class],
             fonts,
             colors,
@@ -832,7 +888,7 @@ def create_infographic(data, filename="portfolio_infographic.png"):
             620,
             asset_class_ru(asset_class),
             value,
-            palette.get(asset_class, "#94A3B8"),
+            palette.get(asset_class, colors["other"]),
             fonts,
             colors,
         )
@@ -858,7 +914,7 @@ def create_infographic(data, filename="portfolio_infographic.png"):
         colors["text"],
     )
 
-    # План следующего пополнения
+    # План пополнения
     draw_contribution_plan(
         draw,
         80,
@@ -879,7 +935,7 @@ def create_infographic(data, filename="portfolio_infographic.png"):
 
     draw.text(
         (80, 1825),
-        f"Пополнение {fmt_money(MONTHLY_INVEST)}/мес • инфляция {INFLATION * 100:.1f}% • доход/мес показан в ценах сегодня",
+        f"Пополнение {fmt_money(MONTHLY_INVEST)}/мес • инфляция {INFLATION * 100:.1f}% • доход/мес в ценах сегодня",
         font=fonts["small"],
         fill=colors["muted"],
     )
@@ -893,12 +949,12 @@ def create_infographic(data, filename="portfolio_infographic.png"):
     y = 1895
 
     for item in data["forecast_data"]["scenarios"]:
-        draw_card(draw, (80, y, 1520, y + 150), colors["card"], colors["border"])
+        draw_card(draw, (80, y, 1520, y + 158), colors["card"], colors["border"])
 
         accent = scenario_colors[item["key"]]
 
         draw.rounded_rectangle(
-            (80, y, 100, y + 150),
+            (80, y, 100, y + 158),
             radius=8,
             fill=accent,
         )
@@ -960,13 +1016,13 @@ def create_infographic(data, filename="portfolio_infographic.png"):
         )
 
         draw.text(
-            (1135, y + 108),
+            (1135, y + 110),
             "по правилу 4%",
             font=fonts["tiny"],
             fill=colors["muted2"],
         )
 
-        y += 180
+        y += 190
 
     # Вложения
     draw_card(draw, (80, y + 20, 1520, y + 160), "#13251A", "#295C38")
@@ -1001,6 +1057,7 @@ def create_infographic(data, filename="portfolio_infographic.png"):
     )
 
     img.save(filename, quality=95)
+
     return filename
 
 
@@ -1010,10 +1067,6 @@ def create_infographic(data, filename="portfolio_infographic.png"):
 
 def collect_portfolio_data():
     if MOCK_MODE:
-        total_now = 130_772.0
-        total_pnl = -2_237.42
-        dividends_total = 685.0
-
         current_allocation = {
             "bond": 0.415,
             "stock": 0.176,
@@ -1021,6 +1074,10 @@ def collect_portfolio_data():
             "cash": 0.007,
             "other": 0.0,
         }
+
+        total_now = 130_772.0
+        total_pnl = -2_237.42
+        dividends_total = 2_800.0
 
         return {
             "total_now": total_now,
@@ -1054,25 +1111,28 @@ def collect_portfolio_data():
     }
 
     for pos in positions:
-        figi = pos.get("figi", "")
         qty = quotation(pos.get("quantity"))
 
         if qty == 0:
             continue
 
+        figi = pos.get("figi", "")
+
         name, kind, ticker = get_instrument_info(figi)
 
         current_price = moneyval(pos.get("currentPrice"))
-
-        # Для валюты/денег иногда цена может быть 0 или отсутствовать.
-        # Тогда берём текущую стоимость позиции из currentNkd / averagePositionPrice / fallback.
         position_value = current_price * qty
 
         if position_value <= 0:
             average_price = moneyval(pos.get("averagePositionPrice"))
             position_value = average_price * qty
 
-        asset_class = classify_asset(kind, name, ticker)
+        asset_class = classify_asset(
+            pos=pos,
+            kind=kind,
+            name=name,
+            ticker=ticker,
+        )
 
         if asset_class not in allocation_values:
             asset_class = "other"
@@ -1139,6 +1199,7 @@ def send_photo(filename, caption=""):
         )
 
     r.raise_for_status()
+
     print("✅ Инфографика отправлена в Telegram")
 
 
