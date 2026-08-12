@@ -5,6 +5,10 @@ on:
     - cron: "0 15 * * 5"
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   send-report:
     runs-on: ubuntu-latest
@@ -30,3 +34,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TINVEST_TOKEN: ${{ secrets.TINVEST_TOKEN }}
         run: python bot.py
+
+      - name: Keepalive (prevent 60-day auto-disable)
+        uses: gautamkrishnar/keepalive-workflow@v2
+        with:
+          use_api: true
