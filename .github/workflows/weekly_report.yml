@@ -25,7 +25,15 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install requests pillow
+
+      - name: Add Russian Trusted CA (T-Bank API certs)
+        run: |
+          curl -s -o root_ca.crt https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt
+          curl -s -o sub_ca.crt https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt
+          CERTIFI=$(python -c "import certifi; print(certifi.where())")
+          cat root_ca.crt sub_ca.crt >> "$CERTIFI"
+          echo "Добавлено в $CERTIFI"
 
       - name: Run bot
         env:
