@@ -36,6 +36,9 @@ jobs:
         run: python bot.py
 
       - name: Keepalive (prevent 60-day auto-disable)
-        uses: gautamkrishnar/keepalive-workflow@v2
-        with:
-          use_api: true
+        if: always()
+        run: |
+          curl -s -X PUT \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/weekly_report.yml/enable"
