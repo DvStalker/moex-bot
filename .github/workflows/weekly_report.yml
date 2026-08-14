@@ -31,9 +31,22 @@ jobs:
         run: |
           curl -s -o root_ca.crt https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt
           curl -s -o sub_ca.crt https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt
+          # Нормализуем в чистый PEM (файлы могут быть DER/с BOM)
+          for f in root_ca sub_ca; do
+            openssl x509 -in $f.crt -out $f.pem 2>/dev/null \
+              || openssl x509 -inform DER -in $f.crt -out $f.pem
+            openssl x509 -in $f.pem -noout -subject
+          done
           CERTIFI=$(python -c "import certifi; print(certifi.where())")
-          cat root_ca.crt sub_ca.crt >> "$CERTIFI"
-          echo "Добавлено в $CERTIFI"
+          printf "\n" >> "$CERTIFI"
+          cat root_ca.pem sub_ca.pem >> "$CERTIFI"
+          # Проверяем, что бандл не сломан
+          python - << 'PYEOF'
+          import ssl, certifi
+          ctx = ssl.create_default_context()
+          ctx.load_verify_locations(certifi.where())
+          print("Бандл валиден, сертификатов:", len(ctx.get_ca_certs()))
+          PYEOF
 
       - name: Run bot
         env:
