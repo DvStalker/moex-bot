@@ -41,7 +41,15 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TINVEST_TOKEN: ${{ secrets.TINVEST_TOKEN }}
-        run: python bot.py
+        run: |
+          set -o pipefail
+          python bot.py 2>&1 | tee /tmp/bot_out.log
+
+      - name: Surface error (annotation)
+        if: failure()
+        run: |
+          ERR=$(tail -c 700 /tmp/bot_out.log | tr '\n' ' | ')
+          echo "::error::BOT OUTPUT TAIL: $ERR"
 
       - name: Keepalive (prevent 60-day auto-disable)
         if: always()
